@@ -42,6 +42,13 @@ python skills/meta-harness/metaharness.py doctor
 
 - `harness_entry: true`, `deepagents` 정상, `OPENAI_API_KEY: true` 인지 확인.
 - `git_clean` 이 false 면 사용자에게 **먼저 커밋/스태시** 를 권한다(promote 롤백 안전망).
+- 매 세션 `init` 으로 baseline 을 **본체 최신 상태로 새로** 만든다. 예전 baseline 이 임시 홈에
+  남아 있으면 오래된 기준과 비교하게 된다. 이전 세션의 variant 는 새 baseline 에서 갈라진 게
+  아니므로 promote 가 거부된다(필요하면 다시 fork).
+
+  ```
+  python skills/meta-harness/metaharness.py init
+  ```
 - 질의 A 의 **성공기준**을 명확히 한다. 사용자가 안 줬으면 짧게 물어라: *무엇이
   "더 나은" 결과인가?* (정확성 / 산출물 품질 / 단계 수·속도 / 특정 도구 사용 등).
   기준 없이 비교하면 정량지표에 과적합된다.
@@ -89,7 +96,9 @@ python skills/meta-harness/metaharness.py fork --from baseline --name v1
 "원본에서 문제가 되는 부분만 정확히 고치는 것"이다. 그래야 (1) 무엇이 효과였는지
 분리되고 (2) 원본의 좋은 지침을 실수로 날리지 않는다. 한 번에 한두 곳만 바꿔라.
 
-수정은 `edit` 서브커맨드로 한다(원본 텍스트 조각을 정확히 find→replace, 유일 매칭 강제):
+수정은 `edit` 서브커맨드로 한다(원본 텍스트 조각을 정확히 find→replace, 유일 매칭 강제).
+variant 는 레포 밖 경로라 파일 도구(`read_file`/`write_file`/`edit_file`)로는 닿지 않는다
+(쓰면 workspace 안에 엉뚱한 파일이 생길 뿐 variant 는 그대로다). 반드시 `edit` 로 수정한다:
 
 ```
 # 예: SYSTEM_PROMPT 에 규칙 한 줄을 삽입하되 원본은 보존 — 앵커 텍스트 뒤에 끼워넣기
@@ -109,13 +118,17 @@ python skills/meta-harness/metaharness.py edit --variant v1 --file connectors.py
 
 - `--find` 는 원본과 **정확히**(공백·들여쓰기 포함) 일치해야 하고, 파일에서 **유일**해야
   한다(여러 번 나오면 거부 → 더 긴 조각으로 좁혀라). 멀티라인은 `--find-file`/`--replace-file`.
-- `--replace` 를 생략/빈값이면 해당 부분 **삭제**. 즉 add/modify/remove 모두 국소로 된다.
+- 삭제는 `--replace` 대신 `--delete` 를 명시한다(`--replace` 를 빠뜨리면 거부). 즉
+  add/modify/remove 모두 국소로 된다.
+- 원본 줄의 30% 넘게(4줄 이상) 지우거나 바꾸는 수정은 **전면 재작성으로 보고 거부**된다
+  (`SYSTEM_PROMPT` 는 프롬프트 본문 기준, 추가만 한 줄은 세지 않음). 거부되면 바꿀 부분을 더
+  좁혀라. `--force` 는 사용자가 전면 재작성을 명시적으로 원할 때만 쓴다.
 - 수정 뒤 반드시 diff 로 **변경이 최소한인지** 확인한다:
   `python skills/meta-harness/metaharness.py diff --a baseline --b v1`
   → 의도한 몇 줄만 바뀌어야 한다. 원본이 통째로 사라졌으면 잘못한 것이다.
 
 > `set-prompt`(프롬프트 블록 전체 교체)는 프롬프트를 **의도적으로 전면 재작성**할 때만
-> 써라. 원본보다 크게 짧아지면 경고가 뜬다(원본 지침을 날린 신호). 대부분의 개선은
+> 써라. 원본의 30% 넘게 바뀌면 거부되며 `--force` 가 필요하다. 대부분의 개선은
 > `edit` 로 충분하다.
 
 수정 후 실제 무엇이 바뀌었는지 확인:
@@ -161,8 +174,11 @@ promote 는 본체를 바꾸는 되돌리기 비싼 행동이므로, 판정의 �
   python skills/meta-harness/metaharness.py promote --variant v1        # 미리보기(diff)
   python skills/meta-harness/metaharness.py promote --variant v1 --yes  # 실제 적용
   ```
-  promote 는 본체(레포)에 쓰는 유일한 명령이다. 라이브 `langgraph dev` 는 파일 변경으로
-  자동 리로드된다. 되돌리려면 `git checkout -- <file>`.
+  promote 는 본체(레포)에 쓰는 유일한 명령이다. 파일을 통째로 복사하지 않고 **variant 가
+  baseline 에서 바꾼 부분만** 본체에 3-way 병합하므로, baseline 이후 본체에 생긴 변경은
+  보존된다. 같은 곳을 양쪽이 다르게 바꿨거나(충돌) variant 가 현재 baseline 에서 fork 되지
+  않았으면 거부된다 → `init` 후 다시 fork 해 수정을 재적용한다. 라이브 `langgraph dev` 는
+  파일 변경으로 자동 리로드된다. 되돌리려면 `git checkout -- <file>`.
 - **무승부** → **promote 하지 않고 baseline(본체)을 유지한다.** 확실하지 않은 변경을 본체에
   들이지 않는 것이 기본이다. 개선 여지가 남았다고 보면 `fork --from baseline --name v2` 로
   **더 뚜렷한 차이를 내는 가설**을 시도해 2~5 를 반복한다. 억지로 승리로 올리지 마라.
@@ -187,7 +203,8 @@ promote 는 본체를 바꾸는 되돌리기 비싼 행동이므로, 판정의 �
   산출물·지표를 그대로 남긴다(summary 의 `partial: true`, `error` 에 사유). 실패해도
   실행기록이 사라지지 않으므로, 왜 느렸는지/멈췄는지 `show --what transcript` 로 진단하라.
 - **격리 보장**: variant 는 레포 밖에 복사되고 격리 워크스페이스에서 돈다. 본체 workspace/
-  AGENTS.md/이메일 트리거는 건드리지 않는다.
+  AGENTS.md/이메일 트리거는 건드리지 않는다. 실행 중 에이전트가 메모리·스킬을 고쳐도 variant
+  소스는 실행 뒤 원래대로 되돌려진다(그 변경은 `runs/<variant>/artifacts/` 에 남는다).
 - **커넥터 off 기본**: 실제 Slack/이메일까지 포함해 재현해야 하면 `init --live` /
   `fork --live` 로 만들되, 실제 메시지가 나갈 수 있음을 사용자에게 먼저 경고하라.
 - **정리**: `python skills/meta-harness/metaharness.py clean --all` 로 임시 홈을 지운다.

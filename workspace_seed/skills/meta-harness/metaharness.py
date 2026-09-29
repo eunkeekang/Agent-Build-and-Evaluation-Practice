@@ -72,6 +72,14 @@ PROMOTABLE_PREFIXES = (
 
 MAX_ARTIFACT_BYTES = 2_000_000  # 산출물로 복사할 파일 최대 크기
 
+# edit/set-prompt 가 원본 줄의 이 비율을 넘게 지우거나 바꾸면 '전면 재작성'으로 보고
+# --force 없이는 거부한다(추가만 한 줄은 세지 않음). 몇 줄짜리 수정은 비율과 무관하게 허용.
+SURGICAL_MAX_RATIO = 0.3
+SURGICAL_MIN_LINES = 4
+
+# variant 가 어느 baseline 에서 갈라졌는지 기록하는 파일(.meta 는 복사·diff 대상에서 제외).
+BASE_META = Path(".meta") / "base.json"
+
 
 def die(msg: str, code: int = 1) -> "None":
     print(f"error: {msg}", file=sys.stderr)
@@ -174,7 +182,27 @@ def make_variant(repo: Path, home: Path, name: str, src: Path | None, live: bool
         if jp.exists():
             shutil.rmtree(jp, ignore_errors=True)
     sanitize_env_file(dst / ".env", live=live)
+    # promote 의 3-way 병합 기준 검증용: fork 는 원본의 기록을 물려받고,
+    # init(원본=레포)은 새 baseline 자신의 지문을 기록한다.
+    base_fp = _read_base_fp(src) if src is not None else _fingerprint(dst)
+    (dst / BASE_META).parent.mkdir(exist_ok=True)
+    (dst / BASE_META).write_text(json.dumps({"base_fingerprint": base_fp}), encoding="utf-8")
     return dst
+
+
+def _fingerprint(root: Path) -> str:
+    """root 의 소스 파일(.env·런타임 경로 제외) 전체를 요약한 지문."""
+    h = hashlib.sha1()
+    for rel, data in sorted(_source_files(root).items()):
+        h.update(f"{rel}\0{_sha1(data)}\n".encode())
+    return h.hexdigest()
+
+
+def _read_base_fp(vp: Path) -> str | None:
+    try:
+        return json.loads((vp / BASE_META).read_text(encoding="utf-8"))["base_fingerprint"]
+    except (OSError, ValueError, KeyError):
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -484,24 +512,40 @@ def cmd_set_prompt(args: argparse.Namespace) -> int:
     if end == -1:
         die("SYSTEM_PROMPT 종료 삼중따옴표를 찾지 못했습니다.")
     old_body = text[body_start:end]
+    _check_surgical("SYSTEM_PROMPT", old_body, new_prompt, args.force)
     # 새 프롬프트 안의 삼중따옴표는 이스케이프.
     safe = new_prompt.replace("\"\"\"", "\\\"\\\"\\\"")
     new_text = text[:body_start] + safe + text[end:]
     entry.write_text(new_text, encoding="utf-8")
     result = {"variant": args.variant, "updated": "SYSTEM_PROMPT",
               "old_chars": len(old_body), "new_chars": len(new_prompt)}
-    # set-prompt 는 프롬프트를 '통째로' 교체한다. 새 프롬프트가 원본보다 크게 짧으면
-    # 원본의 좋은 지침을 의도치 않게 날렸을 가능성이 높다 → 경고(강제 아님).
-    # 원본을 유지한 채 국소 수정을 원하면 `edit`(find/replace)를 쓰는 게 맞다.
-    if old_body and len(new_prompt) < 0.6 * len(old_body):
-        result["warning"] = (
-            f"새 프롬프트가 원본({len(old_body)}자)보다 크게 짧습니다({len(new_prompt)}자). "
-            "원본 지침을 통째로 날린 게 아닌지 확인하세요. 최소 변경만 원하면 `edit` 서브커맨드로 "
-            "특정 부분만 find/replace 하세요."
-        )
-        print(f"[set-prompt] 경고: {result['warning']}", file=sys.stderr)
     print(json.dumps(result, ensure_ascii=False))
     return 0
+
+
+def _prompt_body(text: str) -> str | None:
+    """하네스 소스의 SYSTEM_PROMPT 삼중따옴표 본문(없으면 None)."""
+    marker = "SYSTEM_PROMPT = \"\"\""
+    start = text.find(marker)
+    if start == -1:
+        return None
+    start += len(marker)
+    end = text.find("\"\"\"", start)
+    return text[start:end] if end != -1 else None
+
+
+def _check_surgical(label: str, old: str, new: str, force: bool) -> None:
+    """원본의 큰 부분을 지우거나 바꾸는 수정(=전면 재작성)은 --force 없이는 거부한다."""
+    a, b = old.splitlines(), new.splitlines()
+    ops = difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes()
+    touched = sum(i2 - i1 for tag, i1, i2, _, _ in ops if tag in ("replace", "delete"))
+    if touched < SURGICAL_MIN_LINES or touched <= SURGICAL_MAX_RATIO * len(a):
+        return
+    msg = (f"{label} 원본 {len(a)}줄 중 {touched}줄({touched / len(a):.0%})을 지우거나 바꿉니다. "
+           "국소 수정이 아니라 전면 재작성입니다")
+    if not force:
+        die(msg + ". 바꿀 부분만 `edit` 로 좁히거나, 전면 재작성이 의도라면 --force 를 붙이세요.")
+    print(f"[surgical] 경고(--force): {msg}.", file=sys.stderr)
 
 
 def _resolve_variant_file(vp: Path, rel: str) -> Path:
@@ -520,7 +564,8 @@ def cmd_edit(args: argparse.Namespace) -> int:
     variant 는 원본과 동일한 복사본이므로, 이 명령으로 '바꿀 부분만' 국소 수정하면
     원본 나머지는 그대로 보존된다. find 가 유일하게 매칭돼야 안전하다(--count 로 조정).
     find/replace 는 인라인(--find/--replace) 또는 파일(--find-file/--replace-file)로 준다.
-    replace 를 비우면(생략 또는 빈 문자열) 해당 부분을 삭제한다.
+    삭제는 --delete 로 명시한다(--replace 를 빠뜨려 실수로 지우는 일 방지).
+    원본의 큰 부분을 지우거나 바꾸는 수정은 전면 재작성으로 보고 거부한다(--force 로만 허용).
     """
     repo = find_repo_root()
     home = home_dir(repo, args.home)
@@ -535,12 +580,16 @@ def cmd_edit(args: argparse.Namespace) -> int:
         find = args.find
     else:
         die("--find 또는 --find-file 이 필요합니다.")
+    if args.delete and (args.replace_file or args.replace is not None):
+        die("--delete 와 --replace/--replace-file 은 함께 쓸 수 없습니다.")
     if args.replace_file:
         replace = Path(args.replace_file).read_text(encoding="utf-8")
     elif args.replace is not None:
         replace = args.replace
+    elif args.delete:
+        replace = ""
     else:
-        replace = ""  # 생략 시 삭제
+        die("바꿀 내용을 --replace/--replace-file 로 주거나, 삭제하려면 --delete 를 명시하세요.")
 
     if not find:
         die("find 문자열이 비어 있습니다.")
@@ -552,6 +601,13 @@ def cmd_edit(args: argparse.Namespace) -> int:
         die(f"find 가 {n}회 나타났습니다(기대 {args.count}회). 더 구체적으로 지정하거나 "
             f"--count {n} 로 맞추세요.")
     new_text = text.replace(find, replace)
+    # 하네스는 파일(수백 줄) 대비 프롬프트가 작아 파일 단위로는 프롬프트 전면 교체가 안 잡힌다
+    # → 프롬프트 본문을 따로 검사한다.
+    if target == (vp / HARNESS_ENTRY).resolve():
+        old_body, new_body = _prompt_body(text), _prompt_body(new_text)
+        if old_body is not None and new_body is not None:
+            _check_surgical("SYSTEM_PROMPT", old_body, new_body, args.force)
+    _check_surgical(args.file, text, new_text, args.force)
     target.write_text(new_text, encoding="utf-8")
     print(json.dumps({
         "variant": args.variant,
@@ -606,6 +662,14 @@ def cmd_run(args: argparse.Namespace) -> int:
     vp = variant_path(home, args.variant)
     if not vp.exists():
         die(f"variant '{args.variant}' 가 없습니다. init/fork 로 먼저 만드세요.")
+    if args.variant == "baseline":
+        rf, bf = _source_files(repo), _source_files(vp)
+        stale = sorted(r for r in set(rf) | set(bf)
+                       if r.startswith(PROMOTABLE_PREFIXES) and rf.get(r) != bf.get(r))
+        if stale:
+            print(f"[run] ⚠️ baseline 이 본체와 다릅니다(이전 init 의 오래된 스냅샷): {stale}\n"
+                  "      본체 최신 상태와 비교하려면 `init` 으로 baseline 을 새로 만들고 다시 fork 하세요.",
+                  file=sys.stderr)
 
     out = runs_dir(home) / args.variant
     if out.exists():
@@ -624,7 +688,14 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     print(f"[run] variant={args.variant}  timeout={args.timeout}s  recursion_limit={args.recursion_limit}")
     print(f"[run] 격리 워크스페이스: {ws}")
+    # 하네스는 import 시 workspace→workspace_seed 미러 워처를 띄운다(cwd=variant 기준). 실행 중
+    # 에이전트가 메모리·스킬을 고치면 variant 소스가 바뀌어 비교·promote 에 섞이므로, 실행 뒤
+    # 원래대로 되돌린다(그 변경은 산출물 artifacts/ 에 이미 캡처된다).
+    before = _source_files(vp)
     rc, log = _run_headless_subprocess(repo, vp, ws, out, qf, args.recursion_limit, args.timeout)
+    reverted = _restore_sources(vp, before)
+    if reverted:
+        print(f"[run] 실행 중 바뀐 variant 소스를 되돌렸습니다(변경 내용은 산출물에 남음): {reverted}")
     (out / "run.log").write_text(log, encoding="utf-8")
 
     summ_path = out / "summary.json"
@@ -664,6 +735,38 @@ def _source_files(root: Path) -> dict[str, bytes]:
         except Exception:
             pass
     return files
+
+
+def _restore_sources(root: Path, before: dict[str, bytes]) -> list[str]:
+    """before 스냅샷과 달라진 소스 파일을 원상 복구하고(새로 생긴 파일은 삭제) 경로를 돌려준다."""
+    after = _source_files(root)
+    changed = sorted(r for r in set(before) | set(after) if before.get(r) != after.get(r))
+    for rel in changed:
+        if rel in before:
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_bytes(before[rel])
+        else:
+            (root / rel).unlink()
+    return changed
+
+
+def _merge3(current: bytes, base: bytes, other: bytes) -> tuple[bytes, int]:
+    """base→other 변경만 current 에 3-way 병합한다. (결과, 충돌 수)를 돌려준다."""
+    if current == base:
+        return other, 0
+    if other == base:
+        return current, 0
+    with tempfile.TemporaryDirectory() as td:
+        paths = []
+        for name, data in (("current", current), ("base", base), ("other", other)):
+            (Path(td) / name).write_bytes(data)
+            paths.append(str(Path(td) / name))
+        try:
+            proc = subprocess.run(["git", "merge-file", "-p", *paths], capture_output=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired):
+            return current, 1  # git 을 못 쓰면 병합하지 않고 충돌로 취급(안전)
+    # git merge-file: 0=깨끗, 1~127=충돌 수, 그 이상=오류(충돌로 취급).
+    return proc.stdout, (proc.returncode if proc.returncode < 128 else 1)
 
 
 def _diff_sources(a_root: Path, b_root: Path) -> list[str]:
@@ -777,19 +880,43 @@ def cmd_promote(args: argparse.Namespace) -> int:
     vp = variant_path(home, args.variant)
     if not vp.exists():
         die(f"variant '{args.variant}' 가 없습니다.")
+    base = variant_path(home, "baseline")
+    if not base.exists():
+        die("baseline 이 없습니다. init 하세요.")
+    # variant 가 '지금의' baseline 에서 갈라졌어야 baseline→variant 차이가 곧 variant 의 수정이다.
+    if _read_base_fp(vp) != _fingerprint(base):
+        die(f"variant '{args.variant}' 는 현재 baseline 에서 fork 되지 않았습니다(그 뒤 init 으로 "
+            "baseline 이 바뀌었거나 이전 버전에서 만든 variant). 현재 baseline 에서 다시 fork 해 "
+            "수정을 재적용하세요.")
 
-    # 승격 대상: variant 와 본체가 다른 promotable 소스 파일.
-    vf = _source_files(vp)
-    rf = _source_files(repo)
-    changed: list[str] = []
-    for rel in sorted(set(vf) | set(rf)):
+    # 국소 승격: 파일을 통째로 복사하지 않고, variant 가 baseline 에서 '바꾼 부분만' 본체에
+    # 3-way 병합한다. baseline 이후 본체에 생긴 변경은 보존되고, 같은 곳을 양쪽이 다르게
+    # 바꿨으면 충돌로 거부한다.
+    vf, bf, rf = _source_files(vp), _source_files(base), _source_files(repo)
+    plan: dict[str, bytes] = {}
+    conflicts: list[str] = []
+    for rel in sorted(set(vf) | set(bf)):
         if not (rel.startswith(PROMOTABLE_PREFIXES) or rel in PROMOTABLE_PREFIXES):
             if not args.include_config:
                 continue
-        if vf.get(rel) != rf.get(rel):
-            changed.append(rel)
+        if vf.get(rel) == bf.get(rel):
+            continue
+        if rel not in vf:
+            # variant 에서 삭제된 파일: 본체도 삭제할지는 보수적으로 건너뜀
+            print(f"[promote] (건너뜀) variant 에 없는 파일: {rel}")
+            continue
+        merged, n_conflicts = _merge3(rf.get(rel, b""), bf.get(rel, b""), vf[rel])
+        if n_conflicts:
+            conflicts.append(rel)
+        elif merged != rf.get(rel):
+            plan[rel] = merged
+    if conflicts:
+        die(f"본체와 variant 가 같은 부분을 다르게 바꿔 충돌합니다: {conflicts}. "
+            "`diff --a baseline --b REPO` 로 본체 쪽 변경을 확인하고, init 후 다시 fork 해 "
+            "수정을 재적용하세요.")
+    changed = sorted(plan)
     if not changed:
-        print("승격할 변경사항이 없습니다(variant 와 본체 소스가 동일).")
+        print("승격할 변경사항이 없습니다(variant 의 수정이 없거나 이미 본체에 있음).")
         return 0
 
     # git 안전장치
@@ -813,21 +940,16 @@ def cmd_promote(args: argparse.Namespace) -> int:
         for rel in changed:
             try:
                 at = (rf.get(rel) or b"").decode("utf-8").splitlines(keepends=True)
-                bt = (vf.get(rel) or b"").decode("utf-8").splitlines(keepends=True)
-                sys.stdout.write("".join(difflib.unified_diff(at, bt, fromfile=f"본체/{rel}", tofile=f"variant/{rel}")))
+                bt = plan[rel].decode("utf-8").splitlines(keepends=True)
+                sys.stdout.write("".join(difflib.unified_diff(at, bt, fromfile=f"본체/{rel}", tofile=f"승격후/{rel}")))
             except UnicodeDecodeError:
                 print(f"(binary) {rel}")
         return 0
 
     for rel in changed:
-        srcf = vp / rel
         dstf = repo / rel
         dstf.parent.mkdir(parents=True, exist_ok=True)
-        if srcf.exists():
-            shutil.copy2(srcf, dstf)
-        else:
-            # variant 에서 삭제된 파일: 본체도 삭제할지는 보수적으로 건너뜀
-            print(f"[promote] (건너뜀) variant 에 없는 파일: {rel}")
+        dstf.write_bytes(plan[rel])
     print(json.dumps({"promoted": changed, "repo": str(repo)}, ensure_ascii=False, indent=2))
     print("[promote] 완료. langgraph dev 가 실행 중이면 파일 변경으로 자동 리로드됩니다.")
     return 0
@@ -877,15 +999,18 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--file", required=True, help="variant 내 상대경로(예: langchain-deepagents.py).")
     sp.add_argument("--find", help="찾을 텍스트(인라인).")
     sp.add_argument("--find-file", help="찾을 텍스트 파일(멀티라인).")
-    sp.add_argument("--replace", help="바꿀 텍스트(인라인). 생략/빈값이면 삭제.")
+    sp.add_argument("--replace", help="바꿀 텍스트(인라인).")
     sp.add_argument("--replace-file", help="바꿀 텍스트 파일(멀티라인).")
+    sp.add_argument("--delete", action="store_true", help="find 부분을 삭제(--replace 대신 명시).")
     sp.add_argument("--count", type=int, default=1, help="기대 매칭 횟수(기본 1, 유일 매칭 강제).")
+    sp.add_argument("--force", action="store_true", help="원본의 큰 부분을 바꾸는 전면 재작성도 허용.")
     sp.set_defaults(func=cmd_edit)
 
     sp = sub.add_parser("set-prompt",
-                        help="variant 의 SYSTEM_PROMPT 블록을 통째로 교체(전면 재작성 시에만).")
+                        help="variant 의 SYSTEM_PROMPT 블록을 통째로 교체(크게 바뀌면 --force 필요).")
     sp.add_argument("--variant", required=True)
     sp.add_argument("--file", help="새 프롬프트 파일(없으면 stdin).")
+    sp.add_argument("--force", action="store_true", help="원본의 큰 부분을 바꾸는 전면 재작성도 허용.")
     sp.set_defaults(func=cmd_set_prompt)
 
     sp = sub.add_parser("run", help="variant 를 질의에 대해 헤드리스 실행·캡처.")
