@@ -2,20 +2,32 @@
 
 ## Codespaces에서 실행하기
 
-1. GitHub 저장소 우측 상단의 초록색 **Code** 버튼을 누르고 **Codespaces** 탭에서 **Create codespace from main**을 눌러 Codespace를 만듭니다.
-2. 생성된 Codespace를 열고 VS Code 화면이 나타날 때까지 기다립니다.
-3. 왼쪽 탐색기에서 `.env.example`을 복제해 `.env`로 이름을 바꿉니다. `.env`를 열고 `OPENAI_API_KEY`에 OpenRouter API 키를 입력한 뒤 저장합니다. Codespaces 포워딩 주소로 Studio에 연결하려면 다음 설정도 추가합니다.
+> **전체 흐름** Codespace 만들기 → `.env` 설정 → 설치·실행 → `2024` 포트 공개 → LangSmith Studio 연결 → 채팅
+>
+> 아래 이미지는 이해를 돕기 위한 예시 화면입니다. 실제 화면은 서비스 업데이트에 따라 조금 다를 수 있습니다.
 
-   ```dotenv
-   LANGGRAPH_TUNNEL=0
-   ```
+1. GitHub 저장소 우측 상단의 초록색 **Code** 버튼을 누르고 **Codespaces** 탭에서 **Create codespace on main**을 눌러 Codespace를 만듭니다.
+
+   <img src="docs/images/codespaces/step01-create-codespace.png" alt="Code 버튼 → Codespaces 탭 → Create codespace on main" width="760">
+
+2. 생성된 Codespace를 열고 VS Code 화면이 나타날 때까지 기다립니다. 왼쪽 아래에 **Codespaces: …** 표시가 보이면 준비가 끝난 것입니다.
+
+   <img src="docs/images/codespaces/step02-codespace-ready.png" alt="Codespace의 VS Code 화면: 탐색기, 터미널, Codespaces 연결 표시" width="760">
+
+3. 왼쪽 탐색기에서 `.env.example`을 복제해 `.env`로 이름을 바꿉니다. `.env`를 열고 `OPENAI_API_KEY`에 OpenRouter API 키를 입력한 뒤 저장합니다.
+
+   <img src="docs/images/codespaces/step03-env-file.png" alt=".env 파일을 만들고 OPENAI_API_KEY에 OpenRouter API 키 입력" width="760">
 
    `.env`는 로컬 비밀 설정 파일이므로 커밋하거나 다른 사람과 공유하지 마세요.
+
 4. 하단 패널에서 **Terminal**을 열고 의존성을 설치합니다.
 
    ```bash
    uv sync
    ```
+
+   <img src="docs/images/codespaces/step04-uv-sync.png" alt="터미널에서 uv sync 실행 후 설치 완료" width="760">
+
 5. 설치가 끝나면 메인 스크립트를 실행합니다.
 
    ```bash
@@ -23,12 +35,31 @@
    ```
 
    터미널에 LangGraph 서버가 시작되었다는 로그가 나오는지 확인합니다. 서버를 종료하려면 `Ctrl+C`를 누릅니다.
-6. VS Code 우측 하단에 포트 포워딩 요청이 뜨면 허용합니다. 하단 **PORTS** 탭에서 `2024` 포트가 보이는지 확인하고, 포트 공개 범위를 **Public**으로 설정합니다. 포트의 **Forwarded Address**를 복사합니다.
+
+   <img src="docs/images/codespaces/step05-run-server.png" alt="메인 스크립트 실행 후 LangGraph 서버 시작 배너" width="760">
+
+6. VS Code 우측 하단에 포트 포워딩 요청이 뜨면 허용합니다. 하단 **PORTS** 탭에서 `2024` 포트가 보이는지 확인하고, 포트 공개 범위를 **Public**으로 설정합니다(`2024` 행 우클릭 → **Port Visibility** → **Public**). 포트의 **Forwarded Address**를 복사합니다.
+
+   <img src="docs/images/codespaces/step06-port-public.png" alt="PORTS 탭에서 2024 포트를 Public으로 바꾸고 Forwarded Address 복사" width="760">
+
 7. 새 브라우저 탭에서 [LangSmith](https://smith.langchain.com/)에 접속해 로그인합니다.
 8. 왼쪽 탐색 메뉴에서 **Studio**로 이동한 뒤 **Configure connection**을 누릅니다.
+
+   <img src="docs/images/codespaces/step08-studio-menu.png" alt="LangSmith 왼쪽 메뉴의 Studio와 Configure connection 버튼" width="760">
+
 9. **Base URL**에 PORTS 탭에서 복사한 `2024` 포트의 **Forwarded Address**를 붙여 넣습니다. 주소 끝의 `/`는 제거합니다.
+
+   <img src="docs/images/codespaces/step09-base-url.png" alt="Base URL에 Forwarded Address 붙여넣기" width="760">
+
 10. **Domain not allowed** 경고가 나타나면 **Add to allowed domains**를 눌러 허용합니다.
+
+    <img src="docs/images/codespaces/step10-allow-domain.png" alt="Domain not allowed 경고에서 Add to allowed domains 클릭" width="760">
+
 11. 연결되면 그래프 UI가 나타납니다. `deepagent` 그래프를 선택하고, 좌측 상단의 **Graph** 토글을 **Chat**으로 바꿔 메시지를 보내 응답을 확인합니다.
+
+    <img src="docs/images/codespaces/step11-graph.png" alt="Studio 그래프 화면에서 deepagent 선택 후 Chat으로 전환" width="760">
+
+    <img src="docs/images/codespaces/step11-chat.png" alt="Chat 모드에서 메시지를 보내고 에이전트 응답 확인" width="760">
 
 ## 필수 설정
 
