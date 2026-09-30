@@ -38,7 +38,7 @@ license: MIT
    - **영향도**: 1~5점 + 한 줄 근거(왜 그 점수인지).
 
 5. **브리핑 작성**
-   `templates/briefing.md` 형식을 따른다. 핵심 요약을 맨 앞에 둔다. 길거나 재사용될 것 같으면 `write_file`로 `workspace/`에 저장하고 경로를 알린다.
+   `templates/briefing.md` 형식을 따른다. 핵심 요약을 맨 앞에 둔다. 길거나 재사용될 것 같으면 `write_file`로 workspace 루트(`/`, 예: `/briefing.md`)에 저장하고 경로를 알린다.
 
 6. **자기 점검** (`references/rules.md` 체크리스트)
    - 모든 항목에 출처 URL이 있는가 · 원문에 없는 수치를 지어내지 않았는가 · 투자 추천 표현이 없는가 · 확인 안 된 정보에 `[확인 필요]`를 붙였는가.

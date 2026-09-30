@@ -107,7 +107,7 @@ python skills/meta-harness/metaharness.py edit --variant v1 \
   --find "## Core Behavior" \
   --replace "## Output Persistence
 
-- 핵심 결과는 workspace/answer.txt 에도 저장하라.
+- 핵심 결과는 /answer.txt (workspace 루트)에도 저장하라.
 
 ## Core Behavior"
 
