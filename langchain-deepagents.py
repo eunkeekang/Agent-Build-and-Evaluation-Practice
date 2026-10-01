@@ -53,12 +53,12 @@ insecure_http_async_client = httpx.AsyncClient(verify=False)
 
 # OpenRouter는 OpenAI 호환 API를 제공하므로 model_provider를 openai로 설정합니다.
 model = init_chat_model(
-    model="z-ai/glm-5.3",
+    model="moonshotai/kimi-k3",
     model_provider="openai",
     api_key=api_key,
     base_url=base_url,
     streaming=True,
-    # reasoning_effort 는 OpenRouter 가 모델별 추론 설정으로 변환한다(glm-5.3 은
+    # reasoning_effort 는 OpenRouter 가 모델별 추론 설정으로 변환한다(kimi-k3 는
     # reasoning_effort 를 지원). low 는 지연이 짧고, 복잡한 추론·에이전트 지속성이
     # 필요하면 medium/high 로 올린다.
     reasoning_effort="medium",
